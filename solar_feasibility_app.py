@@ -206,8 +206,8 @@ def estimate_pv_yield_and_financials(
     om_percent_of_capex: float,
     project_life_years: int,
     discount_rate_percent: float,
-    capex_subsidy_percent: float,
     emission_factor_kg_per_kwh: float,
+    capex_subsidy_percent: float,
 ) -> Dict[str, float]:
     """
     Energy yield, simple payback, LCOE (with & without subsidy),
@@ -263,15 +263,26 @@ def estimate_pv_yield_and_financials(
         if system_size_kwp > 0 else float("nan")
     )
 
-    # GHG savings (tCO2/year), using chosen emission factor
+    # GHG savings (tCO2/year), using effective emission factor
     annual_ghg_savings_tco2 = (
         annual_energy_kwh * emission_factor_kg_per_kwh / 1000.0
         if annual_energy_kwh > 0 else 0.0
     )
 
-    # Equivalents (very approximate, to communicate scale)
-    cars_equivalent = annual_ghg_savings_tco2 / 4.6 if annual_ghg_savings_tco2 > 0 else 0.0
-    forest_ha_equivalent = annual_ghg_savings_tco2 / 7.0 if annual_ghg_savings_tco2 > 0 else 0.0
+    # Equivalents (very approximate)
+    # 1 passenger car ~ 4.6 tCO2/year
+    # 1 hectare of forest ~ 7 tCO2/year of CO2 uptake
+    CAR_TCO2_PER_YEAR = 4.6
+    FOREST_TCO2_PER_HA_PER_YEAR = 7.0
+
+    cars_equiv = (
+        annual_ghg_savings_tco2 / CAR_TCO2_PER_YEAR
+        if CAR_TCO2_PER_YEAR > 0 else 0.0
+    )
+    forest_ha_equiv = (
+        annual_ghg_savings_tco2 / FOREST_TCO2_PER_HA_PER_YEAR
+        if FOREST_TCO2_PER_HA_PER_YEAR > 0 else 0.0
+    )
 
     return {
         "annual_kwh_per_kwp": annual_kwh_per_kwp,
@@ -286,8 +297,9 @@ def estimate_pv_yield_and_financials(
         "lcoe_with_subsidy": lcoe_with_subsidy,
         "capacity_factor": capacity_factor,
         "annual_ghg_savings_tco2": annual_ghg_savings_tco2,
-        "ghg_cars_equivalent": cars_equivalent,
-        "ghg_forest_ha_equivalent": forest_ha_equivalent,
+        "cars_equiv": cars_equiv,
+        "forest_ha_equiv": forest_ha_equiv,
+        "emission_factor_kg_per_kwh": emission_factor_kg_per_kwh,
     }
 
 
@@ -307,7 +319,7 @@ def generate_pdf_report(
     project_life_years: int,
     discount_rate_percent: float,
     capex_subsidy_percent: float,
-    emission_baseline_label: str,
+    displacement_mode: str,
     emission_factor_kg_per_kwh: float,
     annual_horizontal: float,
     annual_poa: float,
@@ -330,14 +342,14 @@ def generate_pdf_report(
     pdf.set_font("Arial", "B", 12)
     pdf.cell(0, 8, "1. Site & Solar Resource", ln=1)
     pdf.set_font("Arial", "", 11)
-    pdf.cell(0, 6, f"Annual GHI (horizontal): {annual_horizontal:,.0f} kWh/m²/year", ln=1)
-    pdf.cell(0, 6, f"Annual POA irradiation (tilted): {annual_poa:,.0f} kWh/m²/year", ln=1)
+    pdf.cell(0, 6, f"Annual GHI (horizontal): {annual_horizontal:,.0f} kWh/m2/year", ln=1)
+    pdf.cell(0, 6, f"Annual POA irradiation (tilted): {annual_poa:,.0f} kWh/m2/year", ln=1)
     pdf.multi_cell(0, 6, f"Resource quality: {solar_classification}")
     pdf.ln(2)
 
     # Section 2 – Assumptions
     pdf.set_font("Arial", "B", 12)
-    pdf.cell(0, 8, "2. System, Economic & Emissions Assumptions", ln=1)
+    pdf.cell(0, 8, "2. System & Economic Assumptions", ln=1)
     pdf.set_font("Arial", "", 11)
     pdf.cell(0, 6, f"System size: {system_size_kwp:,.0f} kWp", ln=1)
     pdf.cell(0, 6, f"Performance ratio: {performance_ratio:.2f}", ln=1)
@@ -347,11 +359,11 @@ def generate_pdf_report(
     pdf.cell(0, 6, f"Project life: {project_life_years} years", ln=1)
     pdf.cell(0, 6, f"Discount rate: {discount_rate_percent:.1f}%", ln=1)
     pdf.cell(0, 6, f"Capex subsidy / grant: {capex_subsidy_percent:.1f}% of CAPEX", ln=1)
-    pdf.cell(0, 6, f"Emissions baseline: {emission_baseline_label}", ln=1)
     pdf.cell(
         0,
         6,
-        f"Emission factor: {emission_factor_kg_per_kwh:.3f} kg CO\u2082 per kWh displaced",
+        f"Displacement: {displacement_mode} "
+        f"(emission factor: {emission_factor_kg_per_kwh:.3f} kg CO2/kWh)",
         ln=1,
     )
     pdf.ln(2)
@@ -375,19 +387,19 @@ def generate_pdf_report(
     pdf.cell(
         0,
         6,
-        f"Annual GHG savings: {results['annual_ghg_savings_tco2']:,.0f} tCO\u2082/year",
+        f"Annual GHG savings: {results['annual_ghg_savings_tco2']:,.0f} tCO2/year",
         ln=1,
     )
     pdf.cell(
         0,
         6,
-        f"≈ {results['ghg_cars_equivalent']:,.0f} passenger cars taken off the road per year",
+        f"Equivalent to removing ~{results['cars_equiv']:,.0f} passenger vehicles/year",
         ln=1,
     )
     pdf.cell(
         0,
         6,
-        f"≈ {results['ghg_forest_ha_equivalent']:,.0f} hectares of forest equivalent (annual uptake)",
+        f"Or ~{results['forest_ha_equiv']:,.0f} hectares of forest CO2 uptake (approximate)",
         ln=1,
     )
     pdf.ln(2)
@@ -560,32 +572,31 @@ def main():
             step=1.0,
         )
 
-        # Emissions baseline toggle: grid vs diesel
-        emission_baseline_label = st.radio(
-            "What does this solar plant displace?",
-            ["Grid electricity", "Diesel generation"],
+        st.markdown("##### Emissions displacement scenario")
+        displacement_mode = st.radio(
+            "What is the solar generation displacing?",
+            ["Grid electricity", "Diesel generators"],
             index=0,
         )
 
-        if emission_baseline_label == "Grid electricity":
-            emission_factor_kg_per_kwh = st.number_input(
-                "Grid emission factor (kg CO₂ per kWh displaced)",
-                min_value=0.0,
-                max_value=2.0,
-                value=0.6,
-                step=0.05,
-                help="Use your grid's marginal or average emission factor "
-                     "(fossil-heavy grids often 0.6–0.9 kgCO₂/kWh).",
-            )
-        else:
-            emission_factor_kg_per_kwh = st.number_input(
-                "Diesel generation emission factor (kg CO₂ per kWh displaced)",
-                min_value=0.0,
-                max_value=3.0,
-                value=0.8,
-                step=0.05,
-                help="Typical diesel gensets are roughly 0.7–0.9 kgCO₂/kWh depending on size and loading.",
-            )
+        grid_emission_factor_kg_per_kwh = st.number_input(
+            "Grid emission factor (kg CO₂ per kWh displaced)",
+            min_value=0.0,
+            max_value=2.0,
+            value=0.6,
+            step=0.05,
+            help="Typical fossil-heavy grids: 0.6–0.9 kgCO₂/kWh. "
+                 "Use your regulatory or marginal grid factor if available.",
+        )
+
+        diesel_emission_factor_kg_per_kwh = st.number_input(
+            "Diesel generator emission factor (kg CO₂ per kWh displaced)",
+            min_value=0.0,
+            max_value=2.0,
+            value=0.8,
+            step=0.05,
+            help="Approximate diesel genset emissions. Use project-specific data if available.",
+        )
 
     st.markdown("---")
 
@@ -603,6 +614,13 @@ def main():
                 return
 
             profile_df = build_solar_profile(ghi_daily, tilt_gain_factor=tilt_gain_factor)
+
+            # Choose emission factor based on displacement mode
+            if displacement_mode == "Diesel generators":
+                emission_factor = diesel_emission_factor_kg_per_kwh
+            else:
+                emission_factor = grid_emission_factor_kg_per_kwh
+
             results = estimate_pv_yield_and_financials(
                 profile_df=profile_df,
                 system_size_kwp=system_size_kwp,
@@ -612,8 +630,8 @@ def main():
                 om_percent_of_capex=om_percent_of_capex,
                 project_life_years=project_life_years,
                 discount_rate_percent=discount_rate_percent,
+                emission_factor_kg_per_kwh=emission_factor,
                 capex_subsidy_percent=capex_subsidy_percent,
-                emission_factor_kg_per_kwh=emission_factor_kg_per_kwh,
             )
 
             annual_horizontal = profile_df.attrs["annual_ghi_horizontal"]
@@ -658,18 +676,19 @@ def main():
 
             # GHG impact
             st.subheader("5️⃣ GHG emissions impact")
-            st.write(f"- Emissions baseline: **{emission_baseline_label}**")
-            st.write(f"- Emission factor: {emission_factor_kg_per_kwh:.3f} kgCO₂/kWh displaced")
+            st.write(f"- Displacement scenario: **{displacement_mode}**")
+            st.write(
+                f"- Effective emission factor: {emission_factor:.3f} kg CO₂ per kWh displaced"
+            )
             st.write(
                 f"- Estimated avoided emissions: "
                 f"{results['annual_ghg_savings_tco2']:,.0f} tCO₂ per year"
             )
             st.write(
-                f"- ≈ {results['ghg_cars_equivalent']:,.0f} passenger cars taken off the road per year"
+                f"- Equivalent to removing ~{results['cars_equiv']:,.0f} passenger vehicles per year"
             )
             st.write(
-                f"- ≈ {results['ghg_forest_ha_equivalent']:,.0f} hectares of forest equivalent "
-                f"(annual CO₂ uptake)"
+                f"- Or ~{results['forest_ha_equiv']:,.0f} hectares of forest CO₂ uptake (approximate)"
             )
 
             # Monthly profile
@@ -702,8 +721,8 @@ def main():
                 project_life_years=project_life_years,
                 discount_rate_percent=discount_rate_percent,
                 capex_subsidy_percent=capex_subsidy_percent,
-                emission_baseline_label=emission_baseline_label,
-                emission_factor_kg_per_kwh=emission_factor_kg_per_kwh,
+                displacement_mode=displacement_mode,
+                emission_factor_kg_per_kwh=emission_factor,
                 annual_horizontal=annual_horizontal,
                 annual_poa=annual_poa,
                 results=results,
