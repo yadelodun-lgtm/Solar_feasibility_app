@@ -207,9 +207,11 @@ def estimate_pv_yield_and_financials(
     project_life_years: int,
     discount_rate_percent: float,
     capex_subsidy_percent: float,
+    emission_factor_kg_per_kwh: float,
 ) -> Dict[str, float]:
     """
-    Energy yield, simple payback, and LCOE (with & without subsidy).
+    Energy yield, simple payback, LCOE (with & without subsidy),
+    capacity factor (as a variable), and GHG savings + equivalents.
     """
     annual_poa_kwh_m2 = profile_df.attrs["annual_ghi_poa"]
 
@@ -255,11 +257,21 @@ def estimate_pv_yield_and_financials(
         if annual_energy_kwh > 0 else float("nan")
     )
 
-    # Capacity factor
+    # Capacity factor as a named variable
     capacity_factor = (
         annual_energy_kwh / (system_size_kwp * 8760.0)
         if system_size_kwp > 0 else float("nan")
     )
+
+    # GHG savings (tCO2/year), using chosen emission factor
+    annual_ghg_savings_tco2 = (
+        annual_energy_kwh * emission_factor_kg_per_kwh / 1000.0
+        if annual_energy_kwh > 0 else 0.0
+    )
+
+    # Equivalents (very approximate, to communicate scale)
+    cars_equivalent = annual_ghg_savings_tco2 / 4.6 if annual_ghg_savings_tco2 > 0 else 0.0
+    forest_ha_equivalent = annual_ghg_savings_tco2 / 7.0 if annual_ghg_savings_tco2 > 0 else 0.0
 
     return {
         "annual_kwh_per_kwp": annual_kwh_per_kwp,
@@ -273,6 +285,9 @@ def estimate_pv_yield_and_financials(
         "lcoe_no_subsidy": lcoe_no_subsidy,
         "lcoe_with_subsidy": lcoe_with_subsidy,
         "capacity_factor": capacity_factor,
+        "annual_ghg_savings_tco2": annual_ghg_savings_tco2,
+        "ghg_cars_equivalent": cars_equivalent,
+        "ghg_forest_ha_equivalent": forest_ha_equivalent,
     }
 
 
@@ -292,6 +307,8 @@ def generate_pdf_report(
     project_life_years: int,
     discount_rate_percent: float,
     capex_subsidy_percent: float,
+    emission_baseline_label: str,
+    emission_factor_kg_per_kwh: float,
     annual_horizontal: float,
     annual_poa: float,
     results: Dict[str, float],
@@ -320,7 +337,7 @@ def generate_pdf_report(
 
     # Section 2 – Assumptions
     pdf.set_font("Arial", "B", 12)
-    pdf.cell(0, 8, "2. System & Economic Assumptions", ln=1)
+    pdf.cell(0, 8, "2. System, Economic & Emissions Assumptions", ln=1)
     pdf.set_font("Arial", "", 11)
     pdf.cell(0, 6, f"System size: {system_size_kwp:,.0f} kWp", ln=1)
     pdf.cell(0, 6, f"Performance ratio: {performance_ratio:.2f}", ln=1)
@@ -330,11 +347,18 @@ def generate_pdf_report(
     pdf.cell(0, 6, f"Project life: {project_life_years} years", ln=1)
     pdf.cell(0, 6, f"Discount rate: {discount_rate_percent:.1f}%", ln=1)
     pdf.cell(0, 6, f"Capex subsidy / grant: {capex_subsidy_percent:.1f}% of CAPEX", ln=1)
+    pdf.cell(0, 6, f"Emissions baseline: {emission_baseline_label}", ln=1)
+    pdf.cell(
+        0,
+        6,
+        f"Emission factor: {emission_factor_kg_per_kwh:.3f} kg CO\u2082 per kWh displaced",
+        ln=1,
+    )
     pdf.ln(2)
 
     # Section 3 – KPIs
     pdf.set_font("Arial", "B", 12)
-    pdf.cell(0, 8, "3. Energy Yield & Financial KPIs", ln=1)
+    pdf.cell(0, 8, "3. Energy Yield, Financial & GHG KPIs", ln=1)
     pdf.set_font("Arial", "", 11)
     pdf.cell(0, 6, f"Annual yield: {results['annual_kwh_per_kwp']:,.0f} kWh/kWp/year", ln=1)
     pdf.cell(0, 6, f"Annual energy (system): {results['annual_energy_kwh']:,.0f} kWh/year", ln=1)
@@ -348,6 +372,24 @@ def generate_pdf_report(
         pdf.cell(0, 6, f"Simple payback (with subsidy): {results['simple_payback_years']:.1f} years", ln=1)
     else:
         pdf.cell(0, 6, "Simple payback: n/a (non-positive net cashflow)", ln=1)
+    pdf.cell(
+        0,
+        6,
+        f"Annual GHG savings: {results['annual_ghg_savings_tco2']:,.0f} tCO\u2082/year",
+        ln=1,
+    )
+    pdf.cell(
+        0,
+        6,
+        f"≈ {results['ghg_cars_equivalent']:,.0f} passenger cars taken off the road per year",
+        ln=1,
+    )
+    pdf.cell(
+        0,
+        6,
+        f"≈ {results['ghg_forest_ha_equivalent']:,.0f} hectares of forest equivalent (annual uptake)",
+        ln=1,
+    )
     pdf.ln(2)
 
     # Section 4 – LCOE
@@ -388,7 +430,7 @@ def generate_pdf_report(
         "before making an investment decision."
     )
 
-    # FIX: handle both str and bytes/bytearray from fpdf2
+    # Safe handling of fpdf2 output (bytes or str)
     raw = pdf.output(dest="S")
     if isinstance(raw, (bytes, bytearray)):
         pdf_bytes = bytes(raw)
@@ -407,8 +449,8 @@ def main():
 
     st.title("🌍 Desktop Solar Feasibility App")
     st.markdown(
-        "Uses **NASA POWER** climatology (2001–2020) to estimate solar resource "
-        "and high-level PV feasibility for any location on Earth."
+        "Uses **NASA POWER** climatology (2001–2020) to estimate solar resource, "
+        "PV performance, financials, and GHG emissions savings for any location on Earth."
     )
 
     col_geo, col_sys = st.columns(2)
@@ -456,9 +498,9 @@ def main():
             help="Approximate factor to convert horizontal GHI to plane-of-array at optimum tilt.",
         )
 
-    # ---- Economics block ----
+    # ---- Economics & GHG block ----
     with col_sys:
-        st.subheader("2️⃣ PV System & Economics")
+        st.subheader("2️⃣ PV System, Economics & GHG")
 
         system_size_kwp = st.number_input(
             "System size (kWp)",
@@ -518,6 +560,33 @@ def main():
             step=1.0,
         )
 
+        # Emissions baseline toggle: grid vs diesel
+        emission_baseline_label = st.radio(
+            "What does this solar plant displace?",
+            ["Grid electricity", "Diesel generation"],
+            index=0,
+        )
+
+        if emission_baseline_label == "Grid electricity":
+            emission_factor_kg_per_kwh = st.number_input(
+                "Grid emission factor (kg CO₂ per kWh displaced)",
+                min_value=0.0,
+                max_value=2.0,
+                value=0.6,
+                step=0.05,
+                help="Use your grid's marginal or average emission factor "
+                     "(fossil-heavy grids often 0.6–0.9 kgCO₂/kWh).",
+            )
+        else:
+            emission_factor_kg_per_kwh = st.number_input(
+                "Diesel generation emission factor (kg CO₂ per kWh displaced)",
+                min_value=0.0,
+                max_value=3.0,
+                value=0.8,
+                step=0.05,
+                help="Typical diesel gensets are roughly 0.7–0.9 kgCO₂/kWh depending on size and loading.",
+            )
+
     st.markdown("---")
 
     # ---- Run & display ----
@@ -544,6 +613,7 @@ def main():
                 project_life_years=project_life_years,
                 discount_rate_percent=discount_rate_percent,
                 capex_subsidy_percent=capex_subsidy_percent,
+                emission_factor_kg_per_kwh=emission_factor_kg_per_kwh,
             )
 
             annual_horizontal = profile_df.attrs["annual_ghi_horizontal"]
@@ -586,8 +656,24 @@ def main():
                 "debt/taxes not included."
             )
 
+            # GHG impact
+            st.subheader("5️⃣ GHG emissions impact")
+            st.write(f"- Emissions baseline: **{emission_baseline_label}**")
+            st.write(f"- Emission factor: {emission_factor_kg_per_kwh:.3f} kgCO₂/kWh displaced")
+            st.write(
+                f"- Estimated avoided emissions: "
+                f"{results['annual_ghg_savings_tco2']:,.0f} tCO₂ per year"
+            )
+            st.write(
+                f"- ≈ {results['ghg_cars_equivalent']:,.0f} passenger cars taken off the road per year"
+            )
+            st.write(
+                f"- ≈ {results['ghg_forest_ha_equivalent']:,.0f} hectares of forest equivalent "
+                f"(annual CO₂ uptake)"
+            )
+
             # Monthly profile
-            st.markdown("### 5️⃣ Monthly solar profile")
+            st.markdown("### 6️⃣ Monthly solar profile")
             profile_df_display = profile_df.copy()
             profile_df_display["GHI_horizontal_kWh/m²/day"] = profile_df_display[
                 "GHI_horizontal_kWh/m²/day"
@@ -616,6 +702,8 @@ def main():
                 project_life_years=project_life_years,
                 discount_rate_percent=discount_rate_percent,
                 capex_subsidy_percent=capex_subsidy_percent,
+                emission_baseline_label=emission_baseline_label,
+                emission_factor_kg_per_kwh=emission_factor_kg_per_kwh,
                 annual_horizontal=annual_horizontal,
                 annual_poa=annual_poa,
                 results=results,
