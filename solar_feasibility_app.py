@@ -670,7 +670,7 @@ def main():
             st.write(f"- **LCOE (no subsidy):** {results['lcoe_no_subsidy']:.3f} per kWh")
             st.write(f"- **LCOE (with subsidy):** {results['lcoe_with_subsidy']:.3f} per kWh")
             st.caption(
-                "LCOE based on capital recovery over project life, constant energy and O&M; "
+                "LCOE based on capital recovery over project life, constant annual energy and O&M; "
                 "debt/taxes not included."
             )
 
@@ -691,9 +691,18 @@ def main():
                 f"- Or ~{results['forest_ha_equiv']:,.0f} hectares of forest CO₂ uptake (approximate)"
             )
 
-            # Monthly profile
+            # Monthly profile (ordered Jan–Dec)
             st.markdown("### 6️⃣ Monthly solar profile")
             profile_df_display = profile_df.copy()
+
+            # Force Month to be an ordered categorical: Jan → Dec
+            profile_df_display["Month"] = pd.Categorical(
+                profile_df_display["Month"],
+                categories=MONTH_NAMES,
+                ordered=True,
+            )
+            profile_df_display = profile_df_display.sort_values("Month")
+
             profile_df_display["GHI_horizontal_kWh/m²/day"] = profile_df_display[
                 "GHI_horizontal_kWh/m²/day"
             ].map(lambda x: round(x, 2))
@@ -706,7 +715,18 @@ def main():
 
             st.dataframe(profile_df_display, use_container_width=True)
             st.markdown("#### GHI (horizontal) by month – kWh/m²/month")
-            st.bar_chart(profile_df.set_index("Month")["GHI_horizontal_kWh/m²/month"])
+
+            profile_df_chart = profile_df.copy()
+            profile_df_chart["Month"] = pd.Categorical(
+                profile_df_chart["Month"],
+                categories=MONTH_NAMES,
+                ordered=True,
+            )
+            profile_df_chart = profile_df_chart.sort_values("Month")
+
+            st.bar_chart(
+                profile_df_chart.set_index("Month")["GHI_horizontal_kWh/m²/month"]
+            )
 
             # PDF download
             pdf_bytes = generate_pdf_report(
